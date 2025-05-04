@@ -1,0 +1,87 @@
+---
+name: API Fuzzing with Schemathesis
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "*"
+
+env:
+  COLUMNS: 150
+  ZO_ROOT_USER_EMAIL: root@example.com
+  ZO_ROOT_USER_PASSWORD: Complexpass#123
+  ZO_BASE_URL: http://localhost:5080/
+  ZO_BASE_URL_SC: http://localhost:5080/
+  WS_ZO_BASE_URL: ws://localhost:5080/
+  ZO_SMTP_ENABLED: true 
+
+
+jobs:
+  api_integration_tests:
+    name: api_integration_tests
+    runs-on: ubicloud-standard-8
+    permissions:
+      contents: read
+    steps:
+      - name: Remove unused tools
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Checkout git repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-03-02
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "21.12"
+
+      - name: Build OpenObserve debug binary
+        run: cargo build --features mimalloc
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.6"
+
+      - name: Start OpenObserve
+        run: ZO_WEBSOCKET_ENABLED=true target/debug/openobserve &
+
+      - name: Wait for start
+        run: sleep 15
+
+      - name: Install Schemathesis
+        run: pip install schemathesis
+
+      - name: Run Schemathesis tests
+        run: |
+          schemathesis run http://localhost:5080/api-doc/openapi.json \
+            --base-url=http://localhost:5080 \
+            --header "Authorization: Basic $BASIC_AUTH" \
+            --checks all \
+            --data-generation-method all \
+            --set-path org_id=default \
+            --set-path stream_name=default \
+            --set-path email_id=schemathesis@example.com
+
+      - name: Upload Schemathesis results
+        uses: actions/upload-artifact@v4
+        with:
+          name: schemathesis-results
+          path: .
+        if: failure()
